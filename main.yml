@@ -48,10 +48,10 @@
       dest: "{{ letsencrypt_certs_dir }}/{{ domain_name }}.crt"
       fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ domain_name }}.crt"
       remaining_days: 91
-    register: acme_challenge_your_domain
+    register: acme_challenge_data
 
-- debug:
-  msg: "{{ acme_challenge_your_domain.json | list }}"
+  - debug:
+      msg: "{{ acme_challenge_data | json_query('challenge_data_dns') | first }}"
 
 
   # - name: Send an email to DNS Admin
