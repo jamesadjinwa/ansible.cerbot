@@ -29,10 +29,17 @@
     shell: "if [ ! -f {{ letsencrypt_account_key }} ]; then openssl genrsa 4096 | tee {{ letsencrypt_account_key }}; fi"
 
   - name: "Generate Let's Encrypt private key"
-    shell: "openssl genrsa 4096 | tee /etc/letsencrypt/keys/{{ domain_name }}.key"
+    shell: "openssl genrsa 4096 | tee /etc/letsencrypt/keys/{{ item }}.key"
+    with_items: "{{ domain_names }}"
 
   - name: "Generate Let's Encrypt CSR"
-    shell: "openssl req -new -sha256 -key /etc/letsencrypt/keys/{{ domain_name }}.key -subj \"/CN={{ domain_name }}\" -reqexts SAN -config <(cat /etc/ssl/openssl.cnf <(printf \"\n[SAN]\nsubjectAltName=DNS:{{ domain_name }},DNS:www.{{ domain_name }}\")) | tee /etc/letsencrypt/csrs/{{ domain_name }}.csr"
+    #shell: "openssl req -new -sha256 -key /etc/letsencrypt/keys/{{ domain_name }}.key -subj \"/CN={{ domain_name }}\" -reqexts SAN -config <(cat /etc/ssl/openssl.cnf <(printf \"\n[SAN]\nsubjectAltName=DNS:{{ domain_name }},DNS:www.{{ domain_name }}\")) | tee /etc/letsencrypt/csrs/{{ domain_name }}.csr"
+    shell: > 
+      openssl req -new -sha256 -key /etc/letsencrypt/keys/{{ item }}.key
+      -subj "/CN={{ item }}" -reqexts SAN -config <(cat /etc/ssl/openssl.cnf
+      <(printf "\n[SAN]\nsubjectAltName=DNS:{{ item }}"))
+      | tee /etc/letsencrypt/csrs/{{ item }}.csr
+    with_items: "{{ domain_names }}"
     args:
       executable: /bin/bash
 
@@ -44,14 +51,24 @@
       account_email: "{{ acme_email }}"
       terms_agreed: 1
       challenge: "{{ acme_challenge_type }}"
-      csr: "{{ letsencrypt_csrs_dir }}/{{ domain_name }}.csr"
-      dest: "{{ letsencrypt_certs_dir }}/{{ domain_name }}.crt"
-      fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ domain_name }}.crt"
+      csr: "{{ letsencrypt_csrs_dir }}/{{ item }}.csr"
+      dest: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
+      fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}.crt"
       remaining_days: 91
-    register: acme_challenge_data
+    register: acme_challenge_data 
+    loop: "{{ domain_names }}"
 
   - debug:
-      msg: "{{ acme_challenge_data | json_query('challenge_data_dns') | first }}"
+      msg: "{{ acme_challenge_data }}"
+
+  - debug:
+      #msg: "{{ acme_challenge_data | json_query('challenge_data_dns') }}"
+      #msg: "{{ acme_challenge_data.challenge_data_dns }}"
+      msg: "{{ item.value | json_query('challenge_data_dns') }}"
+    loop: "{{ lookup('dict', acme_challenge_data) }}"
+    #  var: item
+    #loop: "{{ acme_challenge_data | list | json_query('challenge_data_dns[*]') }}"
+    #loop: "{{ acme_challenge_data }}"
 
 
   # - name: Send an email to DNS Admin
@@ -64,4 +81,17 @@
   #     body: "{{ acme_challenge_your_domain }}"
   #   delegate_to: localhost
       
-    
+
+  # This loop this task until TXT dns record is successfully checked
+  # - name: "Complete Let's Encrypt challenges"
+  #   acme_certificate:
+  #     acme_directory: "{{ acme_directory }}"
+  #     acme_version: "{{ acme_version }}"
+  #     account_key_src: "{{ letsencrypt_account_key }}"
+  #     account_email: "{{ acme_email }}"
+  #     challenge: "{{ acme_challenge_type }}"
+  #     csr: "{{ letsencrypt_csrs_dir }}/{{ domain_name }}.csr"
+  #     dest: "{{ letsencrypt_certs_dir }}/{{ domain_name }}.crt"
+  #     chain_dest: "{{ letsencrypt_certs_dir }}/chain_{{ domain_name }}.crt"
+  #     fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ domain_name }}"
+  #     data: "{{ acme_challenge_data }}"
