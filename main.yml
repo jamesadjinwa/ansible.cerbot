@@ -57,19 +57,14 @@
       remaining_days: 91
     register: acme_challenge_data 
     loop: "{{ domain_names }}"
+    
+  - debug: var="item"
+    with_dict: "{{ acme_challenge_data.get('challenge_data_dns', {}) }}"
 
-  - debug:
-      msg: "{{ acme_challenge_data }}"
 
-  - debug:
-      #msg: "{{ acme_challenge_data | json_query('challenge_data_dns') }}"
-      #msg: "{{ acme_challenge_data.challenge_data_dns }}"
-      msg: "{{ item.value | json_query('challenge_data_dns') }}"
-    loop: "{{ lookup('dict', acme_challenge_data) }}"
-    #  var: item
-    #loop: "{{ acme_challenge_data | list | json_query('challenge_data_dns[*]') }}"
-    #loop: "{{ acme_challenge_data }}"
-
+  # - debug:
+  #     msg: "{{ acme_challenge_data }}"
+    
 
   # - name: Send an email to DNS Admin
   #   become: false
