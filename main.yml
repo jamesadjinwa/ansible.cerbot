@@ -57,24 +57,32 @@
       remaining_days: 91
     register: acme_challenge_data 
     loop: "{{ domain_names }}"
-    
-  - debug: var="item"
-    with_dict: "{{ acme_challenge_data.get('challenge_data_dns', {}) }}"
-
 
   # - debug:
-  #     msg: "{{ acme_challenge_data }}"
-    
+  #     msg: "{{ item | json_query('challenge_data_dns') }}"
+  #     #msg: "{{ acme_challenge_data.values() | list | first | json_query('challenge_data_dns') }}"
+  #   with_items: "{{ acme_challenge_data.values() | list | first }}"
 
-  # - name: Send an email to DNS Admin
-  #   become: false
-  #   sendgrid:
-  #     api_key: "{{ sendgrid_api_key }}"
-  #     from_address: "{{ sendgrid_from_address }}"
-  #     subject: "{{ sendgrid_subject }}"
-  #     to_addresses: "{{ sendgrid_to_addresses }}"
-  #     body: "{{ acme_challenge_your_domain }}"
-  #   delegate_to: localhost
+  - set_fact:
+      acme_dns_challenge: "{{ acme_dns_challenge | default([]) + [ item | json_query('challenge_data_dns') ] }}"
+    with_items: "{{ acme_challenge_data.values() | list | first }}"
+  
+  - debug:
+      msg: |
+        {% for challenge in item %}
+        {{ challenge }}
+        {% endfor %}
+    loop: "{{ acme_dns_challenge }}"
+
+  - name: Send an email to DNS Admin
+    become: false
+    sendgrid:
+      api_key: "{{ sendgrid_api_key }}"
+      from_address: "{{ sendgrid_from_address }}"
+      subject: "{{ sendgrid_subject }}"
+      to_addresses: "{{ sendgrid_to_addresses }}"
+      body: "{{ acme_dns_challenge }}"
+    delegate_to: localhost
       
 
   # This loop this task until TXT dns record is successfully checked
