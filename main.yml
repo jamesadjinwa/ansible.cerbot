@@ -56,7 +56,7 @@
       fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}.crt"
       remaining_days: 91
     register: acme_challenge_data 
-    loop: "{{ domain_names }}"
+    with_items: "{{ domain_names }}"
 
   # - debug:
   #     msg: "{{ item | json_query('challenge_data_dns') }}"
@@ -67,12 +67,12 @@
       acme_dns_challenge: "{{ acme_dns_challenge | default([]) + [ item | json_query('challenge_data_dns') ] }}"
     with_items: "{{ acme_challenge_data.values() | list | first }}"
   
-  - debug:
-      msg: |
-        {% for challenge in item %}
-        {{ challenge }}
-        {% endfor %}
-    loop: "{{ acme_dns_challenge }}"
+  # - debug:
+  #     msg: |
+  #       {% for challenge in item %}
+  #       {{ challenge }}
+  #       {% endfor %}
+  #   with_items: "{{ acme_dns_challenge }}"
 
   - name: Send an email to DNS Admin
     become: false
@@ -85,16 +85,16 @@
     delegate_to: localhost
       
 
-  # This loop this task until TXT dns record is successfully checked
-  # - name: "Complete Let's Encrypt challenges"
-  #   acme_certificate:
-  #     acme_directory: "{{ acme_directory }}"
-  #     acme_version: "{{ acme_version }}"
-  #     account_key_src: "{{ letsencrypt_account_key }}"
-  #     account_email: "{{ acme_email }}"
-  #     challenge: "{{ acme_challenge_type }}"
-  #     csr: "{{ letsencrypt_csrs_dir }}/{{ domain_name }}.csr"
-  #     dest: "{{ letsencrypt_certs_dir }}/{{ domain_name }}.crt"
-  #     chain_dest: "{{ letsencrypt_certs_dir }}/chain_{{ domain_name }}.crt"
-  #     fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ domain_name }}"
-  #     data: "{{ acme_challenge_data }}"
+  # Loop this task until TXT DNS record is successfully checked
+  - name: "Complete Let's Encrypt challenges"
+    acme_certificate:
+      acme_directory: "{{ acme_directory }}"
+      acme_version: "{{ acme_version }}"
+      account_key_src: "{{ letsencrypt_account_key }}"
+      account_email: "{{ acme_email }}"
+      challenge: "{{ acme_challenge_type }}"
+      csr: "{{ letsencrypt_csrs_dir }}/{{ domain_names }}.csr"
+      dest: "{{ letsencrypt_certs_dir }}/{{ domain_names }}.crt"
+      chain_dest: "{{ letsencrypt_certs_dir }}/chain_{{ domain_names }}.crt"
+      fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ domain_names }}"
+      data: "{{ acme_challenge_data }}"
