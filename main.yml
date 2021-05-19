@@ -5,6 +5,13 @@
   vars_files:
     - vars/vars.yml
 
+  handlers:
+    - name: Reload haproxy
+      service:
+        name: haproxy
+        state: reload
+      listen: "reload haproxy"
+
   tasks:
   - name: "Create required directories in /etc/letsencrypt"
     file:
@@ -24,12 +31,28 @@
       name: bash
       state: latest
       update_cache: no
+
+  - stat:
+      path: "{{ letsencrypt_account_key }}"
+    register: account_key
+
+  # - name: "Backup account key"
+  #   when: account_key is defined
   
   - name: "Generate a Let's Encrypt account key"
     shell: "if [ ! -f {{ letsencrypt_account_key }} ]; then openssl genrsa 4096 | tee {{ letsencrypt_account_key }}; fi"
+    when: account_key.stat is not defined
+
+  # - name: Generate RSA 4096 key
+  #   openssl_privatekey:
+  #     path: "{{ letsencrypt_account_key }}"
+  #     type: RSA
+  #     size: 4096
+  #     select_crypto_backend: auto
+  #     state: present
 
   - name: "Generate Let's Encrypt private key"
-    shell: "openssl genrsa 4096 | tee /etc/letsencrypt/keys/{{ item }}.key"
+    shell: "openssl genrsa 4096 | tee {{ letsencrypt_keys_dir }}/{{ item }}.key"
     with_items: "{{ domain_names }}"
 
   - name: "Generate Let's Encrypt CSR"
@@ -54,7 +77,8 @@
       csr: "{{ letsencrypt_csrs_dir }}/{{ item }}.csr"
       dest: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
       fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}.crt"
-      remaining_days: 91
+      #remaining_days: 91
+      force: yes
     register: acme_challenge_data 
     with_items: "{{ domain_names }}"
 
@@ -93,8 +117,21 @@
       account_key_src: "{{ letsencrypt_account_key }}"
       account_email: "{{ acme_email }}"
       challenge: "{{ acme_challenge_type }}"
-      csr: "{{ letsencrypt_csrs_dir }}/{{ domain_names }}.csr"
-      dest: "{{ letsencrypt_certs_dir }}/{{ domain_names }}.crt"
-      chain_dest: "{{ letsencrypt_certs_dir }}/chain_{{ domain_names }}.crt"
-      fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ domain_names }}"
+      csr: "{{ letsencrypt_csrs_dir }}/{{ item }}.csr"
+      dest: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
+      chain_dest: "{{ letsencrypt_certs_dir }}/chain_{{ item }}.crt"
+      fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}"
+      force: yes
       data: "{{ acme_challenge_data }}"
+    with_items: "{{ domain_names }}"
+    register: challenge_ok
+
+  - name: "Copy certificates for Haproxy configuration"
+    copy: 
+      content: |
+        {{ lookup('file', [letsencrypt_certs_dir ~ '/fullchain_' ~ item] | path_join) }}
+        {{ lookup('file', [letsencrypt_keys_dir, item ~ '.key'] | path_join) }}
+      dest: "{{ [haproxy_cert_dir, item ~ '.pem'] | path_join }}"
+    with_items: "{{ domain_names }}"
+    notify: "reload haproxy"
+    when: challenge_ok is defined
