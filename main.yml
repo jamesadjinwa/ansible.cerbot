@@ -78,7 +78,8 @@
       dest: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
       fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}.crt"
       #remaining_days: 91
-      force: yes
+      remaining_days: 60
+      # force: yes
     register: acme_challenge_data 
     with_items: "{{ domain_names }}"
 
@@ -133,10 +134,12 @@
       dest: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
       chain_dest: "{{ letsencrypt_certs_dir }}/chain_{{ item }}.crt"
       fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}"
-      force: yes
+      #force: yes
+      remaining_days: 60
       data: "{{ acme_challenge_data }}"
     with_items: "{{ domain_names }}"
     register: challenge_ok
+    when: acme_challenge_data is changed
     # until: '"{{ letsencrypt_certs_dir }}/fullchain_{{ item }}" is file'
     # retries: 10
     # delay: 60
