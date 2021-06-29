@@ -26,11 +26,18 @@
     - csrs
     - keys
 
-  - name: install bash
-    apk:
-      name: bash
-      state: latest
-      update_cache: no
+  # - block:
+  #   - name: install bash
+  #     apk:
+  #       name: bash
+  #       state: latest
+  #       update_cache: no
+
+  #   - name: Install dnspython python package
+  #     pip:
+  #       name: dnspython
+  #       state: absent
+        # executable: pip
 
   - stat:
       path: "{{ letsencrypt_account_key }}"
@@ -43,28 +50,29 @@
     shell: "if [ ! -f {{ letsencrypt_account_key }} ]; then openssl genrsa 4096 | tee {{ letsencrypt_account_key }}; fi"
     when: account_key.stat.exists == False
 
-  # - name: Generate RSA 4096 key
-  #   openssl_privatekey:
-  #     path: "{{ letsencrypt_account_key }}"
-  #     type: RSA
-  #     size: 4096
-  #     select_crypto_backend: auto
-  #     state: present
-
-  - name: "Generate Let's Encrypt private key"
-    shell: "openssl genrsa 4096 | tee {{ letsencrypt_keys_dir }}/{{ item }}.key"
+  - stat: 
+      path: "{{ letsencrypt_keys_dir }}/{{ item }}.key }}"
+    register: private_key
     with_items: "{{ domain_names }}"
 
-  - name: "Generate Let's Encrypt CSR"
-    #shell: "openssl req -new -sha256 -key /etc/letsencrypt/keys/{{ domain_name }}.key -subj \"/CN={{ domain_name }}\" -reqexts SAN -config <(cat /etc/ssl/openssl.cnf <(printf \"\n[SAN]\nsubjectAltName=DNS:{{ domain_name }},DNS:www.{{ domain_name }}\")) | tee /etc/letsencrypt/csrs/{{ domain_name }}.csr"
-    shell: > 
-      openssl req -new -sha256 -key /etc/letsencrypt/keys/{{ item }}.key
-      -subj "/CN={{ item }}" -reqexts SAN -config <(cat /etc/ssl/openssl.cnf
-      <(printf "\n[SAN]\nsubjectAltName=DNS:{{ item }}"))
-      | tee /etc/letsencrypt/csrs/{{ item }}.csr
-    with_items: "{{ domain_names }}"
-    args:
-      executable: /bin/bash
+  # - debug:
+  #     msg: "{{ private_key }}"
+
+  # - debug: 
+  #     msg: "{{ private_key['results'][ansible_loop.index0]['stat']['exists'] }}"
+  #   loop: "{{ domain_names }}"
+  #   loop_control:
+  #     loop_var: item
+  #     extended: yes
+
+  # - block:
+  - name: 
+    include_tasks: tasks/generate.yml
+    loop: "{{ domain_names }}"
+    loop_control:
+      loop_var: item
+      extended: yes
+    when: private_key['results'][ansible_loop.index0]['stat']['exists'] == False
 
   - name: "Begin Let's Encrypt challenges"
     acme_certificate:
@@ -72,56 +80,46 @@
       acme_version: "{{ acme_version }}"
       account_key_src: "{{ letsencrypt_account_key }}"
       account_email: "{{ acme_email }}"
-      terms_agreed: 1
+      terms_agreed: yes
       challenge: "{{ acme_challenge_type }}"
-      csr: "{{ letsencrypt_csrs_dir }}/{{ item }}.csr"
-      dest: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
-      fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}.crt"
-      #remaining_days: 91
+      src: "{{ letsencrypt_csrs_dir }}/{{ item }}.csr"
+      cert: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
       remaining_days: 60
       # force: yes
     register: acme_challenge_data 
     with_items: "{{ domain_names }}"
-
-  # - debug:
-  #     msg: "{{ item | json_query('challenge_data_dns') }}"
-  #     #msg: "{{ acme_challenge_data.values() | list | first | json_query('challenge_data_dns') }}"
-  #   with_items: "{{ acme_challenge_data.values() | list | first }}"
+    ignore_errors: True
 
   - set_fact:
-      acme_dns_challenge: "{{ acme_dns_challenge | default([]) + [ item | json_query('challenge_data_dns') ] }}"
-    with_items: "{{ acme_challenge_data.values() | list | first }}"
+      dns_records: "{{ dns_records|default([]) + [ {'txt' : acme_challenge_data['results'][ansible_loop.index0]['challenge_data'][item]['dns-01'].record, 'value' : acme_challenge_data['results'][ansible_loop.index0]['challenge_data'][item]['dns-01'].resource_value} ] }}"
+    loop: "{{ domain_names }}"
+    loop_control:
+      loop_var: item
+      extended: yes
+    when: acme_challenge_data['results'][ansible_loop.index0].changed
 
-  # - set_fact:
-  #     acme_dns_challenge: "{{ acme_challenge_data.challenge_data.record }}"
-  #   when: "'_acme-challenge' in item.key"
-  #   with_dict: "{{ acme_challenge_data.get('challenge_data_dns', {}) }}"
+  - block:
+    - name: Send an email to DNS Admin
+      become: false
+      sendgrid:
+        api_key: "{{ sendgrid_api_key }}"
+        from_address: "{{ sendgrid_from_address }}"
+        subject: "{{ sendgrid_subject }}"
+        to_addresses: "{{ sendgrid_to_addresses }}"
+        body: |-
+          {% for record in dns_records %}
+            {{ record.txt }} : {{ record.value }}
+          {% endfor %}
+      delegate_to: localhost
+    
+    # - name: Check DNS TXT Records
+    #   debug: msg="{{ lookup('dig', 'test1.yaamelaa.com./TXT') }}"
 
-  - debug:
-      msg: >-
-        Name: {{ item.key }}
-        Zone: {{ item.key | regex_replace('^(?:.*\\.|)([^.]+\\.[^.]+)$', '\\1') }}
-    # when: "'_acme-challenge' in item.key"
-    with_items: "{{ acme_challenge_data.get('challenge_data_dns', {}) }}"
+    - name: Pause for 5 minutes 
+      pause:
+        minutes: 10
+    when: dns_records is defined
   
-  # - debug:
-  #     msg: |
-  #       {% for challenge in item %}
-  #       {{ challenge }}
-  #       {% endfor %}
-  #   with_items: "{{ acme_dns_challenge }}"
-
-  - name: Send an email to DNS Admin
-    become: false
-    sendgrid:
-      api_key: "{{ sendgrid_api_key }}"
-      from_address: "{{ sendgrid_from_address }}"
-      subject: "{{ sendgrid_subject }}"
-      to_addresses: "{{ sendgrid_to_addresses }}"
-      body: "{{ acme_dns_challenge }}"
-    delegate_to: localhost
-      
-
   # Loop this task until TXT DNS record is successfully checked
   - name: "Complete Let's Encrypt challenges"
     acme_certificate:
@@ -129,26 +127,33 @@
       acme_version: "{{ acme_version }}"
       account_key_src: "{{ letsencrypt_account_key }}"
       account_email: "{{ acme_email }}"
+      terms_agreed: yes
       challenge: "{{ acme_challenge_type }}"
-      csr: "{{ letsencrypt_csrs_dir }}/{{ item }}.csr"
-      dest: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
-      chain_dest: "{{ letsencrypt_certs_dir }}/chain_{{ item }}.crt"
-      fullchain_dest: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}"
+      src: "{{ letsencrypt_csrs_dir }}/{{ item }}.csr"
+      cert: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
+      chain: "{{ letsencrypt_certs_dir }}/chain_{{ item }}.crt"
+      fullchain: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}"
       #force: yes
       remaining_days: 60
-      data: "{{ acme_challenge_data }}"
-    with_items: "{{ domain_names }}"
+      data: "{{ acme_challenge_data['results'][ansible_loop.index0] }}"
+    loop: "{{ domain_names }}"
+    loop_control:
+      loop_var: item
+      extended: yes
+    #with_items: "{{ acme_challenge_data }}"
     register: challenge_ok
-    when: acme_challenge_data is changed
     # until: '"{{ letsencrypt_certs_dir }}/fullchain_{{ item }}" is file'
     # retries: 10
     # delay: 60
+    # when: acme_challenge_data is changed
+    # tags: sslcert
+    ignore_errors: True
 
-  # - name: Check if certs 
-  #   stat: 
-  #     path: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}"
-  #   register: challenge_certs
-  #   with_items: "{{ domain_names }}"
+  - name: Check if certs 
+    stat: 
+      path: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}"
+    register: challenge_certs
+    with_items: "{{ domain_names }}"
 
   - name: "Copy certificates for Haproxy configuration"
     copy: 
