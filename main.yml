@@ -96,6 +96,7 @@
     loop_control:
       loop_var: item
       extended: yes
+    # when: acme_challenge_data is succeeded
     when: acme_challenge_data['results'][ansible_loop.index0].changed
 
   - block:
@@ -111,14 +112,23 @@
             {{ record.txt }} : {{ record.value }}
           {% endfor %}
       delegate_to: localhost
+      register: email_sent
     
-    # - name: Check DNS TXT Records
-    #   debug: msg="{{ lookup('dig', 'test1.yaamelaa.com./TXT') }}"
+    - name: Check if DNS TXT Records are updated
+      shell: "echo Hello" 
+      register: dns_updated
+      until: item['value'] == "{{ lookup('dig', item['txt'], 'qtype=TXT') }}"
+      retries: 10
+      delay: 60
+      
+      loop: "{{ dns_records }}"
+      when: email_sent is succeeded
+    
+    when: dns_records is defined 
 
-    - name: Pause for 5 minutes 
-      pause:
-        minutes: 10
-    when: dns_records is defined
+  - name: Pause for 10 minutes 
+    pause:
+      minutes: 10
   
   # Loop this task until TXT DNS record is successfully checked
   - name: "Complete Let's Encrypt challenges"
@@ -141,13 +151,14 @@
       loop_var: item
       extended: yes
     #with_items: "{{ acme_challenge_data }}"
-    register: challenge_ok
+    register: validate_challenge
     # until: '"{{ letsencrypt_certs_dir }}/fullchain_{{ item }}" is file'
     # retries: 10
     # delay: 60
     # when: acme_challenge_data is changed
     # tags: sslcert
-    ignore_errors: True
+    # ignore_errors: True
+    when: acme_challenge_data is succeeded
 
   - name: Check if certs 
     stat: 
