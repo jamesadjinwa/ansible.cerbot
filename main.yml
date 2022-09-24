@@ -1,5 +1,7 @@
 ---
-- hosts: all
+
+- name: Renew SSL certs
+  hosts: node
   gather_facts: false
   become: true
   vars_files:
@@ -13,168 +15,160 @@
       listen: "reload haproxy"
 
   tasks:
-  - name: "Create required directories in /etc/letsencrypt"
-    file:
-      path: "/etc/letsencrypt/{{ item }}"
-      state: directory
-      owner: root
-      group: root
-      mode: u=rwx,g=x,o=x
-    with_items:
-    - account
-    - certs
-    - csrs
-    - keys
 
-  # - block:
-  #   - name: install bash
-  #     apk:
-  #       name: bash
-  #       state: latest
-  #       update_cache: no
+    - name: Check if Letsencrypt folder exists
+      stat:
+        path: "{{ letsencrypt_dir }}"
+      register: letsencrypt_fol
 
-  #   - name: Install dnspython python package
-  #     pip:
-  #       name: dnspython
-  #       state: absent
-        # executable: pip
+    - name: Destroy Letsencrypt folder
+      file:
+        path: "{{ letsencrypt_dir }}"
+        state: absent
+      when: letsencrypt_fol.stat.exists
 
-  - stat:
-      path: "{{ letsencrypt_account_key }}"
-    register: account_key
+    - name: "Create required directories in letsencrypt"
+      file:
+        path: "{{ letsencrypt_dir }}/{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: u=rwx,g=x,o=x
+      with_items:
+      - account
+      - certs
+      - csrs
+      - keys
 
-  # - name: "Backup account key"
-  #   when: account_key is defined
-  
-  - name: "Generate a Let's Encrypt account key"
-    shell: "if [ ! -f {{ letsencrypt_account_key }} ]; then openssl genrsa 4096 | tee {{ letsencrypt_account_key }}; fi"
-    when: account_key.stat.exists == False
+    - stat:
+        path: "{{ letsencrypt_account_key }}"
+      register: account_key
 
-  - stat: 
-      path: "{{ letsencrypt_keys_dir }}/{{ item }}.key }}"
-    register: private_key
-    with_items: "{{ domain_names }}"
+    - name: "Generate a Let's Encrypt account key"
+      shell: "if [ ! -f {{ letsencrypt_account_key }} ]; then openssl genrsa 4096 | tee {{ letsencrypt_account_key }}; fi"
+      when: account_key.stat.exists == False
+      changed_when: false
 
-  # - debug:
-  #     msg: "{{ private_key }}"
+    - stat: 
+        path: "{{ letsencrypt_keys_dir }}/{{ item }}.key }}"
+      register: private_key
+      with_items: "{{ domain_names }}"
 
-  # - debug: 
-  #     msg: "{{ private_key['results'][ansible_loop.index0]['stat']['exists'] }}"
-  #   loop: "{{ domain_names }}"
-  #   loop_control:
-  #     loop_var: item
-  #     extended: yes
+    - name:
+      include_tasks: tasks/generate.yml
+      loop: "{{ domain_names }}"
+      loop_control:
+        loop_var: item
+        extended: yes
+      when: private_key['results'][ansible_loop.index0]['stat']['exists'] == False
 
-  # - block:
-  - name: 
-    include_tasks: tasks/generate.yml
-    loop: "{{ domain_names }}"
-    loop_control:
-      loop_var: item
-      extended: yes
-    when: private_key['results'][ansible_loop.index0]['stat']['exists'] == False
+    - name: "Begin Let's Encrypt challenges"
+      acme_certificate:
+        acme_directory: "{{ acme_directory }}"
+        acme_version: "{{ acme_version }}"
+        account_key_src: "{{ letsencrypt_account_key }}"
+        account_email: "{{ acme_email }}"
+        terms_agreed: yes
+        challenge: "{{ acme_challenge_type }}"
+        src: "{{ letsencrypt_csrs_dir }}/{{ item }}.csr"
+        cert: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
+        remaining_days: 60
+        force: yes
+      register: acme_challenge_data
+      with_items: "{{ domain_names }}"
+      retries: 3
+      delay: 3
+      until: acme_challenge_data is changed
+      #ignore_errors: True
 
-  - name: "Begin Let's Encrypt challenges"
-    acme_certificate:
-      acme_directory: "{{ acme_directory }}"
-      acme_version: "{{ acme_version }}"
-      account_key_src: "{{ letsencrypt_account_key }}"
-      account_email: "{{ acme_email }}"
-      terms_agreed: yes
-      challenge: "{{ acme_challenge_type }}"
-      src: "{{ letsencrypt_csrs_dir }}/{{ item }}.csr"
-      cert: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
-      remaining_days: 60
-      # force: yes
-    register: acme_challenge_data 
-    with_items: "{{ domain_names }}"
-    ignore_errors: True
+    - name: Check if acme-challenge folder exists  
+      stat:
+        path: "/root/projectfiles/nginx/.well-known/acme-challenge"
+      register: acme_challenge
 
-  - set_fact:
-      dns_records: "{{ dns_records|default([]) + [ {'txt' : acme_challenge_data['results'][ansible_loop.index0]['challenge_data'][item]['dns-01'].record, 'value' : acme_challenge_data['results'][ansible_loop.index0]['challenge_data'][item]['dns-01'].resource_value} ] }}"
-    loop: "{{ domain_names }}"
-    loop_control:
-      loop_var: item
-      extended: yes
-    # when: acme_challenge_data is succeeded
-    when: acme_challenge_data['results'][ansible_loop.index0].changed
+    - name: Delete acme-challenge folder
+      file: 
+        path: "/root/projectfiles/nginx/.well-known/acme-challenge"
+        state: absent
+      when: acme_challenge.stat.exists
 
-  - block:
-    - name: Send an email to DNS Admin
-      become: false
-      sendgrid:
-        api_key: "{{ sendgrid_api_key }}"
-        from_address: "{{ sendgrid_from_address }}"
-        subject: "{{ sendgrid_subject }}"
-        to_addresses: "{{ sendgrid_to_addresses }}"
-        body: |-
-          {% for record in dns_records %}
-            {{ record.txt }} : {{ record.value }}
-          {% endfor %}
-      delegate_to: localhost
-      register: email_sent
-    
-    - name: Check if DNS TXT Records are updated
-      shell: "echo Hello" 
-      register: dns_updated
-      until: item['value'] == "{{ lookup('dig', item['txt'], 'qtype=TXT') }}"
-      retries: 10
-      delay: 60
-      
-      loop: "{{ dns_records }}"
-      when: email_sent is succeeded
-    
-    when: dns_records is defined 
+    - name: Create challenge directories
+      file:
+        path: /root/projectfiles/nginx/.well-known/acme-challenge
+        state: directory
 
-  - name: Pause for 10 minutes 
-    pause:
-      minutes: 10
-  
-  # Loop this task until TXT DNS record is successfully checked
-  - name: "Complete Let's Encrypt challenges"
-    acme_certificate:
-      acme_directory: "{{ acme_directory }}"
-      acme_version: "{{ acme_version }}"
-      account_key_src: "{{ letsencrypt_account_key }}"
-      account_email: "{{ acme_email }}"
-      terms_agreed: yes
-      challenge: "{{ acme_challenge_type }}"
-      src: "{{ letsencrypt_csrs_dir }}/{{ item }}.csr"
-      cert: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
-      chain: "{{ letsencrypt_certs_dir }}/chain_{{ item }}.crt"
-      fullchain: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}"
-      #force: yes
-      remaining_days: 60
-      data: "{{ acme_challenge_data['results'][ansible_loop.index0] }}"
-    loop: "{{ domain_names }}"
-    loop_control:
-      loop_var: item
-      extended: yes
-    #with_items: "{{ acme_challenge_data }}"
-    register: validate_challenge
-    # until: '"{{ letsencrypt_certs_dir }}/fullchain_{{ item }}" is file'
-    # retries: 10
-    # delay: 60
-    # when: acme_challenge_data is changed
-    # tags: sslcert
-    # ignore_errors: True
-    when: acme_challenge_data is succeeded
+    - name: Stop all services
+      docker_compose:
+        project_src: projectfiles
+        build: false
+        stopped: true
+      tags: services
 
-  - name: Check if certs 
-    stat: 
-      path: "{{ letsencrypt_certs_dir }}/fullchain_{{ item }}"
-    register: challenge_certs
-    with_items: "{{ domain_names }}"
+    - name: Create webserver
+      docker_container:
+        name: nginx
+        image: nginx
+        ports:
+          - "80:80"
+        env:
+          NGINX_PORT=80
+        volumes: /root/projectfiles/nginx:/usr/share/nginx/html:ro
+        recreate: yes
+        state: started
 
-  - name: "Copy certificates for Haproxy configuration"
-    copy: 
-      content: |
-        {{ lookup('file', [letsencrypt_certs_dir ~ '/fullchain_' ~ item] | path_join) }}
-        {{ lookup('file', [letsencrypt_keys_dir, item ~ '.key'] | path_join) }}
-      dest: "{{ [haproxy_cert_dir, item ~ '.pem'] | path_join }}"
-    with_items: "{{ domain_names }}"
-    when: '"{{ letsencrypt_certs_dir }}/fullchain_{{ item }}" is file'
-    notify: "reload haproxy"
-    ignore_errors: True
-    
-    # when: challenge_certs|selectattr("stat", "exists") is defined and challenge_certs.stat.exists == True
+    - name: Wait for the webserver to be ready
+      pause:
+        seconds: 30
+
+    - name: Prepare the challenge
+      copy:
+        dest: /root/projectfiles/nginx/{{ acme_challenge_data.results[0].challenge_data[item]['http-01']['resource'] }}
+        content: "{{ acme_challenge_data.results[0].challenge_data[item]['http-01']['resource_value'] }}"
+      with_items: "{{ domain_names }}"
+      when: acme_challenge_data is changed
+      ignore_errors: True
+
+    - name: Validate challenge and retrieve certs
+      acme_certificate:
+        acme_directory: "{{ acme_directory }}"
+        acme_version: "{{ acme_version }}"
+        account_key_src: "{{ letsencrypt_account_key }}"
+        account_email: "{{ acme_email }}"
+        terms_agreed: yes
+        challenge: "{{ acme_challenge_type }}"
+        src: "{{ letsencrypt_csrs_dir }}/{{ item }}.csr"
+        cert: "{{ letsencrypt_certs_dir }}/{{ item }}.crt"
+        fullchain: "{{ letsencrypt_certs_dir }}/{{ item }}-fullchain.crt"
+        chain: "{{ letsencrypt_certs_dir }}/{{ item }}-intermediate.crt"
+        remaining_days: 60
+        force: yes
+        data: "{{ acme_challenge_data.results[0] }}"
+          #register: acme_challenge_data
+      with_items: "{{ domain_names }}"
+      when: acme_challenge_data is changed
+
+    - name: Create Haproxy cert folder
+      file:
+        path: "{{ haproxy_cert_dir }}"
+        state: directory
+
+    - name: Create certifile used by Haproxy
+      shell: "cat {{ letsencrypt_certs_dir }}/{{ item }}-fullchain.crt {{ letsencrypt_keys_dir }}/{{ item }}.key | tee {{ haproxy_cert_dir }}/{{ item }}-fullchain.pem"
+      with_items: "{{ domain_names }}"
+      when: acme_challenge_data is changed
+
+    - name: "Create Certlist file"
+      shell: "echo \"/etc/haproxy/certs/\"\"$(find {{ haproxy_cert_dir }} -maxdepth 1 -name '*-fullchain.pem' -printf \"%f\n\")\"  | tee {{ haproxy_cert_dir }}/certlist.txt"
+      when: acme_challenge_data is changed
+
+    - name: Destroy webserver
+      docker_container:
+        name: nginx
+        state: absent
+
+    - name: Start all services
+      docker_compose:
+        project_src: projectfiles
+        build: false
+        stopped: false
+      tags: services
